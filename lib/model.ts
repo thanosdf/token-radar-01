@@ -337,7 +337,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     implied_value_usd: s.v.implied,
     model: {
       sector: s.v.sector,
-      sector_multiple: round4(s.v.sectorMultiple),
+      sector_multiple: s.v.sectorMultiple,
       sector_comps: s.v.sectorComps,
       growth_pct: s.v.growthPct,
       growth_multiplier: round4(s.v.growthMult),

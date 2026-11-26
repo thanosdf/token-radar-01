@@ -107,19 +107,19 @@ tbody tr[data-selected="true"] { background: rgba(34, 211, 238, 0.08); }
 
 .detail { background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: var(--radius-panel); max-width: 680px; width: calc(100vw - 32px); padding: 0; }
 .detail::backdrop { background: rgba(4, 8, 16, 0.72); }
-.detail-head { display: flex; justify-content: space-between; gap: var(--step-3); padding: var(--step-5) var(--step-4) var(--step-3); border-bottom: 1px solid var(--border); }
+.detail-head { display: flex; justify-content: space-between; gap: var(--step-3); padding: var(--step-4) var(--step-4) var(--step-3); border-bottom: 1px solid var(--border); }
 .detail-head .brand-name { color: var(--accent); font-size: 13px; }
 .detail-head h2 { margin-top: 4px; }
 .detail-head p { color: var(--muted); margin-top: 4px; }
 .close { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-control); padding: 8px 12px; height: fit-content; }
-.detail-section { padding: var(--step-4); border-bottom: 1px solid var(--border); }
+.detail-section { padding: var(--step-3) var(--step-4); border-bottom: 1px solid var(--border); }
 .detail-section:last-child { border-bottom: 0; }
-.detail-section h3 { margin-bottom: var(--step-3); }
-.equation { display: grid; grid-template-columns: 1fr 1fr; gap: var(--step-2) var(--step-4); }
-.equation > div { display: flex; justify-content: space-between; gap: var(--step-3); padding: 9px 0; border-top: 1px solid var(--border); }
+.detail-section h3 { margin-bottom: var(--step-2); }
+.equation { display: grid; grid-template-columns: 1fr 1fr; gap: 2px var(--step-4); }
+.equation > div { display: flex; justify-content: space-between; gap: var(--step-3); padding: 6px 0; border-top: 1px solid var(--border); }
 .equation span { color: var(--muted); font-size: 13px; }
-.steps { margin: 0; padding-left: 20px; display: grid; gap: var(--step-3); }
-.steps li { line-height: 1.5; }
+.steps { margin: 0; padding-left: 20px; display: grid; gap: var(--step-2); }
+.steps li { line-height: 1.45; }
 .steps .cost { display: block; color: var(--muted); font-size: 13px; margin-top: 2px; }
 .note { color: var(--muted); font-size: 13px; margin-top: var(--step-3); }
 
