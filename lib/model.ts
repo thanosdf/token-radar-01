@@ -21,8 +21,46 @@
 //   chainMult       = 1 + min(chains - 1, 5) x 0.02
 //   implied         = max(1, round(base x growthMult x maturity x chainMult))
 //
-// No protocol name is ever special-cased: the same function scores every row, and the sector
-// multiples are derived from the snapshot at run time, never written in by hand.
+// How the calibration is read out of the snapshot (computeComps, sectorMultiple):
+//   - A trading comp is a protocol whose record carries a token that already trades: it has both
+//     a market cap and a CoinGecko id, a positive TVL and a positive market cap, and the ratio of
+//     the two is a finite positive number. A protocol missing any of those is not a comp.
+//   - The sector multiple is the MEDIAN of the comps' market-cap-to-TVL ratios, not the mean.
+//     A median is used because one protocol with an extreme ratio (a tiny TVL with a large cap,
+//     or a stablecoin whose cap sits near its TVL) would drag a mean far from the sector's
+//     centre, while the median stays with the typical protocol in the sector.
+//   - A sector is only used when it holds at least four trading comps (MODEL.min_comps). With
+//     fewer than four, the sector's median rests on one or two names and is not a market; the
+//     protocol is priced at the whole market's median instead, and its sector is recorded as
+//     "Market" so the dashboard can say the row fell back.
+//   - The multiple is clamped to [0.03, 1.50]. Below 0.03 a protocol would be priced as though
+//     its token were nearly worthless however large its TVL, and above 1.50 a thin sector's
+//     median could price a pre-token protocol above the market cap of its own TVL's peers.
+//     The clamp keeps the board's values inside the range the market itself shows.
+//   - The multiples are derived from the snapshot at run time, every run, and are never written
+//     in by hand. The same snapshot that prices the board is the one the comps come from, so a
+//     different snapshot would price the board differently and the board is honest about it.
+//
+// Why each multiplier exists:
+//   - Growth (change_7d, clamped to -60..120, weight 0.5): a protocol whose TVL is growing is
+//     attracting deposits now, and a token issued into growth is worth more than one issued into
+//     decline. The clamp keeps a single week's spike or crash from doubling or halving a value.
+//   - Maturity (age with no token, 0.6 at day zero rising to 1.0 at three years): a protocol
+//     that has run for years with no token has had time to build the users and the TVL a launch
+//     would price, and the market has had time to expect one. A brand-new protocol is
+//     discounted. When the snapshot carries no listing date, the age is taken as 365 days, the
+//     middle of the range, rather than zero or three years.
+//   - Chain breadth (up to 1.10 for six or more chains): a protocol on several chains reaches
+//     more users and more liquidity than one on a single chain, so its token would launch into
+//     a wider market. The step is 0.02 a chain, capped at five steps, so breadth helps but
+//     never dominates the value.
+//
+// The farm plan is derived from the same record (category, chains, TVL, age), never from a
+// hand-written list of names. Gas is priced for the protocol's own chain, the capital follows
+// its TVL tier, the hold follows its age, and the watch step names what to check before a
+// token is claimed. No protocol name is ever special-cased: the same function scores every
+// row, and the sector multiples are derived from the snapshot at run time, never written in
+// by hand.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -136,6 +174,8 @@ export interface RadarRow {
   listed_at: string | null;
   age_days: number | null;
   implied_value_usd: number;
+  sector: string;
+  sector_comps: number;
   sector_multiple: number;
   growth_multiplier: number;
   maturity_multiplier: number;
@@ -221,6 +261,10 @@ export function computeComps(snapshot: Snapshot, model: ModelConstants = MODEL):
   const ratios = new Map<string, number[]>();
   const all: number[] = [];
   for (const p of snapshot.protocols) {
+    // A comp must already trade: a market cap and a CoinGecko id, a positive TVL and a positive
+    // market cap, and a ratio that is a finite positive number. A protocol that records no token
+    // is the thing being priced, not a comp, and a zero or negative TVL would make the ratio
+    // meaningless, so both are left out rather than patched with a guess.
     if (p.mcap_usd === null || p.gecko_id === null) continue;
     if (p.tvl_usd <= 0 || p.mcap_usd <= 0) continue;
     const ratio = p.mcap_usd / p.tvl_usd;
@@ -231,6 +275,8 @@ export function computeComps(snapshot: Snapshot, model: ModelConstants = MODEL):
     list.push(ratio);
     ratios.set(sector, list);
   }
+  // The median is taken over a sorted list, so one protocol with an extreme ratio cannot move it:
+  // a mean would let a single tiny-TVL protocol with a large cap set the sector's price.
   all.sort((a, b) => a - b);
   const global = medianOf(all) ?? 0.25;
   const bySector = new Map<string, SectorComp>();
@@ -265,11 +311,18 @@ export function impliedValue(
   model: ModelConstants = MODEL,
 ): { implied: number; growthPct: number; growthMult: number; maturityMult: number; chainMult: number; sectorMultiple: number; sector: string; sectorComps: number; age: number | null } {
   const age = ageDays(asOf, protocol.listed_at);
+  // Growth is clamped before it is weighted: a single week's spike or crash must not double or
+  // halve a value, and a protocol with no reported change is scored at zero growth, not punished.
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
   const growthMult = 1 + (growthPct / 100) * model.growth_weight;
+  // Maturity rises with age and stops at three years: beyond that the protocol has already had
+  // the whole window a launch would price, and more age adds nothing. An unknown age is taken
+  // as one year, the middle of the range, rather than zero or three years.
   const ageForModel = age ?? model.unknown_age_days;
   const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
+  // Chain breadth adds a little for each extra chain, capped at five steps: distribution helps,
+  // but a protocol on ten chains is not twice as valuable as one on five.
   const chainSteps = Math.min(Math.max(protocol.chains.length - 1, 0), model.chain_max_steps);
   const chainMult = 1 + chainSteps * model.chain_step;
   const priced = sectorMultiple(protocol.category, comps, model);
@@ -388,6 +441,46 @@ function gasFor(chain: string): number {
   return 3;
 }
 
+/** The protocol's TVL tier, in words: the capital a farm position needs follows it, and the plan
+ *  names the tier so a reader can tell at a glance how large a position this farm is. */
+function tierLabel(p: SnapshotProtocol): string {
+  if (p.tvl_usd >= 5_000_000_000) return 'a large protocol, over $5B of TVL';
+  if (p.tvl_usd >= 1_000_000_000) return 'a mid-size protocol, $1B to $5B of TVL';
+  if (p.tvl_usd >= 100_000_000) return 'a smaller protocol, $100M to $1B of TVL';
+  return 'a small protocol, under $100M of TVL';
+}
+
+/** What one transaction costs on each chain this protocol runs on, in whole dollars, so the plan
+ *  can quote the gas a weekly action actually costs instead of one chain's figure. */
+function gasTableFor(p: SnapshotProtocol): string {
+  const chains = p.chains.length > 0 ? p.chains.slice(0, 3) : ['its main chain'];
+  return chains.map((c) => `${c} about $${gasFor(c)}`).join(', ');
+}
+
+/** A horizon for the farm, from the protocol's age: a younger protocol has had less time to be
+ *  noticed, so its qualifying window is longer; an older one has a shorter window left. */
+function timelineFor(age: number | null): string {
+  if (age === null) return 'four weeks of weekly actions, then a 30-day hold';
+  if (age < 180) return 'eight weeks of weekly actions, then a 60-day hold';
+  if (age < 365) return 'six weeks of weekly actions, then a 45-day hold';
+  return 'four weeks of weekly actions, then a 30-day hold';
+}
+
+/** What to watch before a token is claimed, by category: the one signal that tells a farmer
+ *  whether the position is still worth holding, and the first sign to leave. */
+function watchFor(p: SnapshotProtocol): string {
+  const c = (p.category ?? '').toLowerCase();
+  const name = p.name;
+  if (c.includes('lend') || c.includes('cdp') || c.includes('collateral')) return `the borrow rate and the points page on ${name}: a rising rate with no points is a farm with no reward.`;
+  if (c.includes('dex') || c.includes('yield') || c.includes('leveraged farm') || c.includes('liquidity manager')) return `the pool's fee revenue and the points page on ${name}: fees with no points still pay, points with no fees do not.`;
+  if (c.includes('bridge') || c.includes('cross chain')) return `bridge finality and the destination chain's balance on ${name}: a bridge that has not settled is not a completed farm.`;
+  if (c.includes('staking') || c.includes('restak')) return `the staking yield and the receipt token's price on ${name}: a falling yield is the first sign the farm is crowded.`;
+  if (c.includes('perpetual') || c.includes('derivative') || c.includes('options')) return `the funding rate and the margin balance on ${name}: a funding rate that stays negative eats the position.`;
+  if (c.includes('rwa')) return `the underlying asset's yield and the redemption window on ${name}: a yield that falls below the chain's base rate is a farm to leave.`;
+  if (c.includes('risk curator') || c.includes('curator') || c.includes('allocator') || c.includes('onchain capital')) return `the vault's allocation and its curator's history on ${name}: a vault that changes strategy without notice is a farm to leave.`;
+  return `the points page and the protocol's own announcements on ${name}: a snapshot date is only real when the protocol publishes it.`;
+}
+
 /** The category's one action, in the words a farmer can follow. */
 function actionFor(p: SnapshotProtocol, capital: number, chain: string): string {
   const c = (p.category ?? '').toLowerCase();
@@ -423,10 +516,11 @@ function secondActionFor(p: SnapshotProtocol, capital: number, chain: string): s
 }
 
 /**
- * A protocol's farm plan: six steps, each an action with a cost and a time. The plan is derived
+ * A protocol's farm plan: seven steps, each an action with a cost and a time. The plan is derived
  * from the protocol's own record (category, chains, TVL, age), never from a hand-written list of
- * names. Gas is priced for the protocol's own chain, and the capital and the hold follow its TVL
- * and its age.
+ * names. Gas is priced for the protocol's own chains, the capital follows its TVL tier, the hold
+ * follows its age, and the last step names the one signal to watch before a token is claimed.
+ * A multi-chain protocol gets a second-chain step; a single-chain one is told to stay put.
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const chain = chainOf(p);
@@ -435,10 +529,19 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   const gas = gasFor(chain);
   const action = actionFor(p, capital, chain);
   const second = secondActionFor(p, capital, chain);
+  const tier = tierLabel(p);
+  const gasTable = gasTableFor(p);
+  const timeline = timelineFor(age);
+  const watch = watchFor(p);
   const otherChains = p.chains.length > 1 ? ` It also runs on ${p.chains.slice(1, 3).join(' and ')}.` : '';
+  const multiChain =
+    p.chains.length > 1
+      ? `Repeat the first deposit on ${p.chains[1]} as well, so the record shows use on more than one chain.`
+      : `Keep the position on ${chain}; a second chain would only split the record.`;
+  const secondChainGas = gasFor(p.chains.length > 1 ? p.chains[1]! : chain);
   return [
     {
-      text: `Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.${otherChains}`,
+      text: `Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline. This is ${tier}, so farm with $${capital} of capital.${otherChains}`,
       cost: `about $${gas} of gas for the first transaction on ${chain}`,
       time: '5 minutes',
     },
@@ -453,17 +556,22 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
       time: '10 minutes',
     },
     {
-      text: `Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.`,
+      text: multiChain,
+      cost: `about $${secondChainGas} of gas on the second chain`,
+      time: '10 minutes',
+    },
+    {
+      text: `Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote. Gas runs ${gasTable}.`,
       cost: `about $${gas} of gas a week`,
       time: '10 minutes a week',
     },
     {
-      text: `Hold the position for at least ${hold} days so the activity is counted in more than one snapshot.`,
+      text: `Hold the position for at least ${hold} days so the activity is counted in more than one snapshot. The plan's horizon is ${timeline}.`,
       cost: `the $${capital} stays in the position`,
       time: `${hold} days`,
     },
     {
-      text: `Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes. Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.`,
+      text: `Watch ${watch} Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes. Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.`,
       cost: 'no fee to check, and never pay to claim',
       time: '15 minutes',
     },
@@ -487,7 +595,8 @@ export function liveRows(snapshot: Snapshot): LiveRow[] {
     }));
 }
 
-/** A board row's compact form for data.js. */
+/** A board row's compact form for data.js. The sector name and the comp count ride along so the
+ *  detail view can say which comps priced the row, and whether the row fell back to the market. */
 export function radarRow(row: BoardRow): RadarRow {
   return {
     rank: row.rank,
@@ -501,6 +610,8 @@ export function radarRow(row: BoardRow): RadarRow {
     listed_at: row.listed_at,
     age_days: row.age_days,
     implied_value_usd: row.implied_value_usd,
+    sector: row.model.sector,
+    sector_comps: row.model.sector_comps,
     sector_multiple: row.model.sector_multiple,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,

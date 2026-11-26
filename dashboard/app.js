@@ -87,6 +87,39 @@
     if (c === 'base' || c === 'arbitrum' || c === 'optimism' || c === 'polygon' || c === 'avalanche' || c === 'binance' || c === 'bnb chain' || c === 'blast' || c === 'mode' || c === 'zksync era') return 1;
     return 3;
   }
+  // The protocol's TVL tier, in words: the capital a farm position needs follows it.
+  function tierLabel(p) {
+    if (p.tvl_usd >= 5e9) return 'a large protocol, over $5B of TVL';
+    if (p.tvl_usd >= 1e9) return 'a mid-size protocol, $1B to $5B of TVL';
+    if (p.tvl_usd >= 1e8) return 'a smaller protocol, $100M to $1B of TVL';
+    return 'a small protocol, under $100M of TVL';
+  }
+  // What one transaction costs on each chain this protocol runs on, in whole dollars.
+  function gasTableFor(p) {
+    var chains = p.chains && p.chains.length > 0 ? p.chains.slice(0, 3) : ['its main chain'];
+    return chains.map(function (c) { return c + ' about $' + gasFor(c); }).join(', ');
+  }
+  // A horizon for the farm, from the protocol's age: younger protocols need a longer window.
+  function timelineFor(age) {
+    if (age === null || age === undefined) return 'four weeks of weekly actions, then a 30-day hold';
+    if (age < 180) return 'eight weeks of weekly actions, then a 60-day hold';
+    if (age < 365) return 'six weeks of weekly actions, then a 45-day hold';
+    return 'four weeks of weekly actions, then a 30-day hold';
+  }
+  // What to watch before a token is claimed, by category: the one signal that tells a farmer
+  // whether the position is still worth holding, and the first sign to leave.
+  function watchFor(p) {
+    var c = (p.category || '').toLowerCase();
+    var name = p.name;
+    if (c.indexOf('lend') >= 0 || c.indexOf('cdp') >= 0 || c.indexOf('collateral') >= 0) return 'the borrow rate and the points page on ' + name + ': a rising rate with no points is a farm with no reward.';
+    if (c.indexOf('dex') >= 0 || c.indexOf('yield') >= 0 || c.indexOf('leveraged farm') >= 0 || c.indexOf('liquidity manager') >= 0) return "the pool's fee revenue and the points page on " + name + ': fees with no points still pay, points with no fees do not.';
+    if (c.indexOf('bridge') >= 0 || c.indexOf('cross chain') >= 0) return "bridge finality and the destination chain's balance on " + name + ': a bridge that has not settled is not a completed farm.';
+    if (c.indexOf('staking') >= 0 || c.indexOf('restak') >= 0) return "the staking yield and the receipt token's price on " + name + ': a falling yield is the first sign the farm is crowded.';
+    if (c.indexOf('perpetual') >= 0 || c.indexOf('derivative') >= 0 || c.indexOf('options') >= 0) return 'the funding rate and the margin balance on ' + name + ': a funding rate that stays negative eats the position.';
+    if (c.indexOf('rwa') >= 0) return "the underlying asset's yield and the redemption window on " + name + ": a yield that falls below the chain's base rate is a farm to leave.";
+    if (c.indexOf('risk curator') >= 0 || c.indexOf('curator') >= 0 || c.indexOf('allocator') >= 0 || c.indexOf('onchain capital') >= 0) return "the vault's allocation and its curator's history on " + name + ': a vault that changes strategy without notice is a farm to leave.';
+    return "the points page and the protocol's own announcements on " + name + ': a snapshot date is only real when the protocol publishes it.';
+  }
   function actionFor(p, capital, chain) {
     var c = (p.category || '').toLowerCase();
     var name = p.name;
@@ -123,19 +156,31 @@
     if (s.length < 20) s = s + " Hold the position and check the protocol's own page.";
     return s;
   }
+  // Seven steps, the same derivation main.ts writes to board.json: category, chains, TVL and age
+  // decide the action, the capital, the hold, the gas on each chain and what to watch. No name
+  // is special-cased, and a multi-chain protocol gets a second-chain step.
   function farmSteps(p) {
     var chain = chainOf(p);
     var capital = capitalFor(p);
     var hold = holdDaysFor(p.age_days);
     var gas = gasFor(chain);
+    var tier = tierLabel(p);
+    var gasTable = gasTableFor(p);
+    var timeline = timelineFor(p.age_days);
+    var watch = watchFor(p);
     var other = p.chains && p.chains.length > 1 ? ' It also runs on ' + p.chains.slice(1, 3).join(' and ') + '.' : '';
+    var multiChain = p.chains && p.chains.length > 1
+      ? 'Repeat the first deposit on ' + p.chains[1] + ' as well, so the record shows use on more than one chain.'
+      : 'Keep the position on ' + chain + '; a second chain would only split the record.';
+    var secondChainGas = gasFor(p.chains && p.chains.length > 1 ? p.chains[1] : chain);
     return [
-      { text: 'Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline.' + other, cost: 'about $' + gas + ' of gas for the first transaction on ' + chain, time: '5 minutes' },
+      { text: 'Use a fresh wallet that holds only the funds you plan to farm, and keep its seed phrase offline. This is ' + tier + ', so farm with $' + capital + ' of capital.' + other, cost: 'about $' + gas + ' of gas for the first transaction on ' + chain, time: '5 minutes' },
       { text: actionFor(p, capital, chain), cost: '$' + capital + ' of capital and about $' + gas + ' of gas', time: '15 minutes to set up' },
       { text: secondActionFor(p, capital, chain), cost: 'about $' + gas + ' of gas, plus the $' + Math.max(10, Math.round(capital / 5)) + ' moved', time: '10 minutes' },
-      { text: 'Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote.', cost: 'about $' + gas + ' of gas a week', time: '10 minutes a week' },
-      { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot.', cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
-      { text: "Before you withdraw, open the protocol's own points or rewards page and claim only from the link it publishes. Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.", cost: 'no fee to check, and never pay to claim', time: '15 minutes' }
+      { text: multiChain, cost: 'about $' + secondChainGas + ' of gas on the second chain', time: '10 minutes' },
+      { text: 'Make one qualifying action each week, such as a deposit, a borrow, a swap or a vote. Gas runs ' + gasTable + '.', cost: 'about $' + gas + ' of gas a week', time: '10 minutes a week' },
+      { text: 'Hold the position for at least ' + hold + ' days so the activity is counted in more than one snapshot. The plan\'s horizon is ' + timeline + '.', cost: 'the $' + capital + ' stays in the position', time: hold + ' days' },
+      { text: 'Watch ' + watch + ' Before you withdraw, open the protocol\'s own points or rewards page and claim only from the link it publishes. Write the wallet, the dates and every transaction in a farm log so you can repeat the position or unwind it.', cost: 'no fee to check, and never pay to claim', time: '15 minutes' }
     ].map(stepText);
   }
 
@@ -407,6 +452,15 @@
         el('div', null, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
       ),
       el('p', { class: 'note', text: 'Model ' + DATA.model_version + ': the same function scores every protocol. The page recomputes this row as ' + fmtUsd(impliedOf(row)) + (impliedOf(row) === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' This is an estimate, not a price.' })
+    ));
+    // The comps behind the row's multiple: which sector priced it, how many trading protocols
+    // the median rests on, and whether the row fell back to the market median.
+    var compsNote = row.sector_comps > 0
+      ? 'Priced from ' + row.sector_comps + ' trading comps in ' + (row.sector || row.category || 'its sector') + ', at a median market-cap-to-TVL ratio of ' + fmtMult(row.sector_multiple) + '. The median is read out of this same snapshot, so the same sector on a different snapshot would price differently.'
+      : 'Priced from the market median of ' + fmtMult(row.sector_multiple) + ': its sector had fewer than four trading protocols, so no sector multiple was used and the row fell back to the whole market.';
+    dialog.appendChild(el('section', { class: 'detail-section' },
+      el('h3', { text: 'Sector comps' }),
+      el('p', { class: 'note', text: compsNote })
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm plan' }),
